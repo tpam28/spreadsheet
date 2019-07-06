@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"io/ioutil"
 	"net/http"
 	"net/url"
-
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
 const (
@@ -50,9 +49,13 @@ func NewServiceWithClient(client *http.Client) *Service {
 // Service represents a Sheets API service instance.
 // Service is the main entry point into using this package.
 type Service struct {
-	baseURL string
-	client  *http.Client
+	baseURL   string
+	client    *http.Client
+	whiteList WhiteList
 }
+
+//WhiteList is a storage list of titles sheets.
+type WhiteList map[string][]string
 
 // CreateSpreadsheet creates a spreadsheet with the given title
 func (s *Service) CreateSpreadsheet(spreadsheet Spreadsheet) (resp Spreadsheet, err error) {
@@ -82,6 +85,9 @@ func (s *Service) FetchSpreadsheet(id string) (spreadsheet Spreadsheet, err erro
 	fields := "spreadsheetId,properties.title,sheets(properties,data.rowData.values(formattedValue))"
 	fields = url.QueryEscape(fields)
 	path := fmt.Sprintf("/spreadsheets/%s?fields=%s", id, fields)
+	if a := s.sheetsFromWhiteList(id); a != "" {
+		path = path + a
+	}
 	body, err := s.get(path)
 	if err != nil {
 		return
@@ -193,6 +199,54 @@ func (s *Service) DeleteColumns(sheet *Sheet, start, end int) (err error) {
 	}
 	err = r.DeleteDimension(sheet, "COLUMNS", start, end).Do()
 	return
+}
+
+//AddWhiteList add sheet(and range) to list autoload
+func (s *Service) AddWhiteList(spreadsheetId, sheetName string) {
+	if s.whiteList == nil {
+		s.whiteList = make(WhiteList)
+	}
+	if _, ok := s.whiteList[spreadsheetId]; !ok {
+		s.whiteList[spreadsheetId] = []string{sheetName}
+		return
+	}
+	for _, val := range s.whiteList[spreadsheetId] {
+		if val == sheetName {
+			return
+		}
+	}
+	s.whiteList[spreadsheetId] = append(s.whiteList[spreadsheetId], sheetName)
+}
+
+//RmWhiteList remove sheet from list autoload
+func (s *Service) RmWhiteList(spreadsheetId, sheetName string) {
+	if _, ok := s.whiteList[spreadsheetId]; s.whiteList == nil || !ok {
+		return
+	}
+	names := s.whiteList[spreadsheetId]
+	i := -1
+	for k, v := range names {
+		if v == sheetName {
+			i = k
+			break
+		}
+	}
+	if i < 0 {
+		return
+	}
+	names[len(names)-1], names[i] = names[i], names[len(names)-1]
+	s.whiteList[spreadsheetId] = names[:len(names)-1]
+}
+
+func (s *Service) sheetsFromWhiteList(spreadsheetId string) string {
+	if s.whiteList == nil || len(s.whiteList[spreadsheetId]) == 0 {
+		return ""
+	}
+	a := &url.Values{}
+	for _, name := range s.whiteList[spreadsheetId] {
+		a.Add("ranges", name)
+	}
+	return "&" + a.Encode()
 }
 
 func (s *Service) syncCells(sheet *Sheet) (err error) {
